@@ -1,0 +1,6 @@
+{
+	"name": "gists",
+	"tree": {
+		"$path": "src"
+	}
+}
