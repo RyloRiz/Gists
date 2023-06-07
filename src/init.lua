@@ -6,17 +6,17 @@
 local HTTP = game:GetService("HttpService")
 local GISTS_API = "https://api.github.com"
 
--- Proxy table type
+--- Proxy table type
 type tbl = { [any]: any }
 
--- Function to encode data into JSON format
--- @param data The data to be encoded
--- @return The encoded data
+--- Function to encode data into JSON format
+--- @param data The data to be encoded
+--- @return The encoded data
 local function encode(data: string | tbl?): string?
 	return typeof(data) == "string" and data or HTTP:JSONEncode(data)
 end
 
--- Function to decode data from JSON format
+--- Function to decode data from JSON format
 -- @param data The data to be decoded
 -- @return The decoded data
 local function decode(data: string?): tbl
@@ -36,9 +36,9 @@ export type Response = {
 	Success: boolean,
 }
 
--- Function to handle HTTP requests
--- @param fields The request fields
--- @return The response from the request
+--- Function to handle HTTP requests
+--- @param fields The request fields
+--- @return The response from the request
 local function handleRequest(fields: Fields): Response
 	local response = HTTP:RequestAsync(fields)
 
@@ -53,6 +53,10 @@ local function handleRequest(fields: Fields): Response
 	return response
 end
 
+--- Function to split a string into chunks
+--- @param text The text to chunk
+--- @param size The desired size of the chunks
+--- @return The chunked strings
 local function chunk(text: string, size: number): { string }
 	local s = {}
 	for i = 1, #text, size do
@@ -62,7 +66,6 @@ local function chunk(text: string, size: number): { string }
 end
 
 type IGist = {
-	_CreateFiles: (self: IGist, files: any) -> any,
 	_Purge: (self: IGist) -> nil,
 	_URLS: { string },
 	id: string,
@@ -74,6 +77,10 @@ type IGist = {
 
 local Gist: IGist = {} :: IGist
 
+--- Instantiate a new Gist
+--- @param secret The GitHub PAT
+--- @param name The name of the Gist
+--- @param id The internal parameter for loading already-instantiated Gists
 function Gist.new(secret: string, name: string, id: string?): IGist
 	local self = setmetatable({}, Gist)
 
@@ -102,8 +109,8 @@ function Gist.new(secret: string, name: string, id: string?): IGist
 		}
 
 		local res = handleRequest(req)
-		if res.Success and req.Body then
-			self.id = req.Body.id
+		if res.Success and res.Body then
+			self.id = res.Body.id
 		else
 			error(`Request failed at Gist.new()`)
 		end
@@ -113,40 +120,47 @@ function Gist.new(secret: string, name: string, id: string?): IGist
 end
 
 function Gist:_Purge() : nil
+	local req: Fields = {
+		Url = GISTS_API + `/gists/{self.id}`,
+		Method = "DELETE",
+		Headers = {
+			["Authorization"] = `Bearer {self.secret}`,
+		},
+	}
 
+	local res = handleRequest(req)
+	if res.Success then
+		return nil
+	else
+		error(`Request failed at Gist:_Purge()`)
+	end
 end
 
--- function Gist:_CreateFiles(files)
--- 	local req: Fields = {
--- 		Url = GISTS_API + "/gists",
--- 		Method = "POST",
--- 		Headers = {
--- 			["Accept"] = "application/vnd.github+json",
--- 			["Authorization"] = `Bearer {self.secret}`,
--- 		},
--- 		Body = encode({
--- 			description = "Created by Gists.lua",
--- 			files = files,
--- 			public = false,
--- 		}),
--- 	}
-
--- 	local res = handleRequest(req)
--- 	if res.Success then
--- 		self.id = res.Body.id
--- 		local fc = res.Body.files
--- 		for k, v in pairs(fc) do
--- 			self._URLS = {}
--- 			self._URLS[k] = v["raw_url"]
--- 		end
--- 		return nil
--- 	else
--- 		error(`Request failed at Gist:_CreateFiles()`)
--- 	end
--- end
-
 function Gist:Read() : tbl
-
+	local files = {}
+	local str = ""
+	local req: Fields = {
+		Url = GISTS_API + `/gists/{self.id}`,
+		Method = "GET",
+		Headers = {
+			["Authorization"] = `Bearer {self.secret}`,
+		},
+	}
+	local res = handleRequest(req)
+	for k, v in pairs(res.Body.files) do
+		files[k] = HTTP:GetAsync(v["raw_url"])
+	end
+	local i = 1
+	while true do
+		local f = files[`ROBLOXGISTDB_{i}_{self.name}.txt`]
+		if f then
+			str ..= f
+		else
+			break
+		end
+		i += 1
+	end
+	return HTTP:JSONDecode(str)
 end
 
 function Gist:Write(newContents: string) : nil
@@ -159,6 +173,13 @@ function Gist:Write(newContents: string) : nil
 		files[gistName] = {
 			content = encode(contentChunk),
 		}
+	end
+	for k, _ in pairs(self._URLS) do
+		if table.find(updatedFilenames, k) then
+			continue
+		else
+			files[k] = nil
+		end
 	end
 	local req: Fields = {
 		Url = GISTS_API + `/gists/{self.id}`,
@@ -176,8 +197,8 @@ function Gist:Write(newContents: string) : nil
 	local res = handleRequest(req)
 	if res.Success and res.Body then
 		local f = res.Body.files
+		self._URLS = {}
 		for k, v in pairs(f) do
-			self._URLS = {}
 			self._URLS[k] = v["raw_url"]
 		end
 		return nil
@@ -213,9 +234,14 @@ end
 
 function GistManager:DeleteGist(name: string) : nil
 	local gist = self:FetchGist(name)
-	if gist then
+	local index = table.find(self._GISTS, gist)
+	if gist and index > 0 then
+		gist:_Purge()
+		table.remove(self._GISTS, index)
+		setmetatable(gist, nil)
+		return nil
 	else
-		error(`Cannot delete nonexistant Gist "{name}"`)
+		error(`Cannot delete nonexistant Gist "{name}" with index {index}`)
 	end
 end
 
